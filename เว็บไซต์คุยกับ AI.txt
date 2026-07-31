@@ -1,0 +1,375 @@
+﻿from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
+import requests
+import random
+import re
+
+
+app = Flask(__name__)
+app.secret_key = "your_secret_key_here"
+
+
+users_db = {}
+chat_history_db = {}
+
+
+DEFAULT_GITHUB_URL = "https://raw.githubusercontent.com/iceiceitachis-tech/game-/refs/heads/main/Delta.json"
+FORBIDDEN_PASSWORDS = ["12345678", "87654321", "21436587"]
+
+
+def fetch_github_responses(url):
+    try:
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        print(f"Error fetching GitHub JSON: {e}")
+    return None
+
+
+INDEX_HTML = """
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Chat - หน้าแรก</title>
+    <style>
+        body { background-color: #000; color: #fff; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { text-align: center; }
+        h1 { color: #ff0033; margin-bottom: 30px; }
+        .btn { background-color: #ff0033; color: #000; padding: 12px 30px; text-decoration: none; font-weight: bold; border-radius: 8px; display: inline-block; margin: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ยินดีต้อนรับสู่ AI แชทบอท</h1>
+        <a href="/login" class="btn">เข้าสู่ระบบ</a>
+        <a href="/register" class="btn">สมัครสมาชิก</a>
+    </div>
+</body>
+</html>
+"""
+
+
+REGISTER_HTML = """
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <title>สมัครสมาชิก</title>
+    <style>
+        body { background-color: #000; color: #fff; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .box { background: #111; padding: 30px; border-radius: 10px; width: 300px; border: 1px solid #ff0033; }
+        h2 { color: #ff0033; text-align: center; }
+        input { width: 100%; padding: 10px; margin: 10px 0; background: #222; border: 1px solid #444; color: #fff; border-radius: 5px; box-sizing: border-box; }
+        .btn { width: 100%; background-color: #ff0033; color: #000; padding: 10px; font-weight: bold; border: none; border-radius: 5px; cursor: pointer; margin-top: 10px; }
+        .error { color: #ff0033; font-size: 14px; text-align: center; margin-bottom: 10px; }
+        a { color: #ff0033; display: block; text-align: center; margin-top: 15px; text-decoration: none; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>สมัครสมาชิก</h2>
+        {% if error %}<div class="error">{{ error }}</div>{% endif %}
+        <form method="POST">
+            <label>ชื่อ (ภาษาอังกฤษเท่านั้น):</label>
+            <input type="text" name="username" required>
+            <label>รหัสผ่าน:</label>
+            <input type="password" name="password" required>
+            <label>ยืนยันรหัสผ่าน:</label>
+            <input type="password" name="confirm_password" required>
+            <button type="submit" class="btn">สมัครสมาชิก</button>
+        </form>
+        <a href="/login">มีบัญชีอยู่แล้ว? เข้าสู่ระบบ</a>
+    </div>
+</body>
+</html>
+"""
+
+
+LOGIN_HTML = """
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <title>เข้าสู่ระบบ</title>
+    <style>
+        body { background-color: #000; color: #fff; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .box { background: #111; padding: 30px; border-radius: 10px; width: 300px; border: 1px solid #ff0033; }
+        h2 { color: #ff0033; text-align: center; }
+        input { width: 100%; padding: 10px; margin: 10px 0; background: #222; border: 1px solid #444; color: #fff; border-radius: 5px; box-sizing: border-box; }
+        .btn { width: 100%; background-color: #ff0033; color: #000; padding: 10px; font-weight: bold; border: none; border-radius: 5px; cursor: pointer; margin-top: 10px; }
+        .error { color: #ff0033; font-size: 14px; text-align: center; margin-bottom: 10px; }
+        a { color: #ff0033; display: block; text-align: center; margin-top: 15px; text-decoration: none; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>เข้าสู่ระบบ</h2>
+        {% if error %}<div class="error">{{ error }}</div>{% endif %}
+        <form method="POST">
+            <label>ชื่อ:</label>
+            <input type="text" name="username" required>
+            <label>รหัส:</label>
+            <input type="password" name="password" required>
+            <button type="submit" class="btn">เข้าสู่ระบบ</button>
+        </form>
+        <a href="/register">ยังไม่มีบัญชี? สมัครสมาชิก</a>
+    </div>
+</body>
+</html>
+"""
+
+
+CHAT_HTML = """
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI Chatbot</title>
+    <style>
+        * { box-sizing: border-box; }
+        html, body { background-color: #000; color: #fff; font-family: sans-serif; margin: 0; padding: 0; height: 100%; overflow: hidden; }
+        
+        #sidebar { width: 260px; background-color: #111; border-right: 1px solid #222; display: flex; flex-direction: column; position: fixed; top: 0; left: -260px; height: 100%; transition: 0.3s; z-index: 1000; }
+        #sidebar.active { left: 0; }
+        .sidebar-header { padding: 15px; font-weight: bold; border-bottom: 1px solid #222; color: #ff0033; display: flex; justify-content: space-between; align-items: center; }
+        .history-list { flex: 1; overflow-y: auto; padding: 10px; }
+        .history-item { padding: 8px; margin-bottom: 5px; background: #1a1a1a; border-radius: 4px; font-size: 13px; word-break: break-all; }
+        .logout-btn { padding: 15px; background: #ff0033; color: #000; text-align: center; text-decoration: none; font-weight: bold; display: block; }
+
+
+        .app-layout { display: flex; flex-direction: column; height: 100%; width: 100%; position: relative; }
+        
+        .top-bar { display: flex; justify-content: space-between; align-items: center; padding: 10px 15px; background: #000; border-bottom: 1px solid #222; height: 50px; flex-shrink: 0; z-index: 10; }
+        .menu-btn, .plus-btn { background: none; border: none; color: #fff; font-size: 20px; cursor: pointer; }
+        .plus-badge { background-color: #ff0033; color: #000; padding: 5px 12px; border-radius: 20px; font-weight: bold; font-size: 14px; text-decoration: none; }
+
+
+        .chat-messages { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 15px; }
+        .message { max-width: 85%; padding: 12px 16px; border-radius: 10px; line-height: 1.5; word-break: break-word; font-size: 15px; }
+        .message.user { background-color: #ff0033; color: #000; align-self: flex-end; border-top-right-radius: 0; font-weight: bold; }
+        .message.bot { background-color: #1a1a1a; color: #fff; align-self: flex-start; border-top-left-radius: 0; border: 1px solid #333; }
+
+
+        .chat-input-area { background: #000; padding: 10px 15px; display: flex; align-items: center; gap: 10px; border-top: 1px solid #222; flex-shrink: 0; z-index: 10; }
+        .input-box-wrapper { flex: 1; display: flex; align-items: center; background: #1a1a1a; border-radius: 24px; padding: 8px 15px; border: 1px solid #333; }
+        .input-box-wrapper textarea { flex: 1; background: none; border: none; color: #fff; outline: none; font-size: 16px; resize: none; max-height: 100px; font-family: sans-serif; line-height: 1.4; }
+        .btn-send { background-color: #ff0033; color: #000; border: none; padding: 0 20px; border-radius: 20px; font-weight: bold; cursor: pointer; font-size: 15px; height: 40px; flex-shrink: 0; }
+    </style>
+</head>
+<body>
+
+
+    <div id="sidebar">
+        <div class="sidebar-header">
+            <span>ประวัติแชททั้งหมด</span>
+            <button onclick="toggleSidebar()" style="background:none; border:none; color:#fff; cursor:pointer;">✕</button>
+        </div>
+        <div class="history-list">
+            {% for chat in history %}
+                <div class="history-item"><b>{{ "คุณ" if chat.sender == 'user' else 'AI' }}:</b> {{ chat.text }}</div>
+            {% endfor %}
+        </div>
+        <a href="/logout" class="logout-btn">ออกจากระบบ</a>
+    </div>
+
+
+    <div class="app-layout">
+        <div class="top-bar">
+            <button class="menu-btn" onclick="toggleSidebar()">☰</button>
+            <a href="#" class="plus-badge">+ รับ Plus</a>
+            <button class="plus-btn">💬</button>
+        </div>
+
+
+        <div class="chat-messages" id="chatMessages">
+            {% for chat in history %}
+                <div class="message {{ chat.sender }}">{{ chat.text }}</div>
+            {% endfor %}
+        </div>
+
+
+        <div class="chat-input-area">
+            <div class="input-box-wrapper">
+                <textarea id="messageInput" rows="1" placeholder="พิมพ์ข้อความ..." onkeydown="handleKeyDown(event)"></textarea>
+            </div>
+            <button class="btn-send" onclick="sendMessage()">ส่ง</button>
+        </div>
+    </div>
+
+
+    <script>
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('active');
+        }
+
+
+        function scrollToBottom() {
+            const chatContainer = document.getElementById('chatMessages');
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+
+        window.onload = scrollToBottom;
+
+
+        async function sendMessage() {
+            const inputField = document.getElementById('messageInput');
+            const messageText = inputField.value.trim();
+            if (!messageText) return;
+
+
+            const chatMessages = document.getElementById('chatMessages');
+            
+            const userDiv = document.createElement('div');
+            userDiv.className = 'message user';
+            userDiv.innerText = messageText;
+            chatMessages.appendChild(userDiv);
+            
+            inputField.value = '';
+            scrollToBottom();
+
+
+            try {
+                const response = await fetch('/send_message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: messageText })
+                });
+                const data = await response.json();
+
+
+                const botDiv = document.createElement('div');
+                botDiv.className = 'message bot';
+                botDiv.innerText = data.response || "ขออภัยครับ ระบบไม่พบคำตอบ";
+                chatMessages.appendChild(botDiv);
+                scrollToBottom();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+
+        function handleKeyDown(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
+    </script>
+</body>
+</html>
+"""
+
+
+@app.route("/")
+def index():
+    if "user" in session:
+        return redirect(url_for("chat"))
+    return render_template_string(INDEX_HTML)
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    error = None
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
+        confirm_password = request.form.get("confirm_password", "").strip()
+
+
+        if not re.match("^[A-Za-z]+$", username):
+            error = "ชื่อต้องเป็นภาษาอังกฤษเท่านั้น (A-Z, a-z)"
+        elif username in users_db:
+            error = "ชื่อนี้ถูกใช้งานแล้ว กรุณาเลือกชื่ออื่น"
+        elif password in FORBIDDEN_PASSWORDS:
+            error = "ห้ามใช้รหัสผ่านง่ายเกินไป เช่น 12345678, 87654321, 21436587"
+        elif password != confirm_password:
+            error = "รหัสผ่านและยืนยันรหัสผ่านไม่ตรงกัน"
+        else:
+            users_db[username] = password
+            chat_history_db[username] = []
+            return redirect(url_for("login"))
+
+
+    return render_template_string(REGISTER_HTML, error=error)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
+
+
+        if username in users_db and users_db[username] == password:
+            session["user"] = username
+            return redirect(url_for("chat"))
+        else:
+            error = "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง"
+
+
+    return render_template_string(LOGIN_HTML, error=error)
+
+
+@app.route("/logout")
+def logout():
+    session.pop("user", None)
+    return redirect(url_for("index"))
+
+
+@app.route("/chat")
+def chat():
+    if "user" not in session:
+        return redirect(url_for("login"))
+    username = session["user"]
+    history = chat_history_db.get(username, [])
+    return render_template_string(CHAT_HTML, username=username, history=history)
+
+
+@app.route("/send_message", methods=["POST"])
+def send_message():
+    if "user" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+
+    username = session["user"]
+    user_message = request.json.get("message", "").strip()
+    if not user_message:
+        return jsonify({"error": "Empty message"})
+
+
+    data = fetch_github_responses(DEFAULT_GITHUB_URL)
+    bot_response = "ขออภัยครับ ระบบไม่พบคำตอบที่คุณต้องการในขณะนี้"
+
+
+    if data and isinstance(data, dict):
+        user_text_lower = user_message.lower()
+        collected_responses = []
+
+
+        for key_word, options in data.items():
+            if key_word.lower() == "no delta":
+                continue
+            if key_word.lower() in user_text_lower:
+                if isinstance(options, list) and options:
+                    collected_responses.append(random.choice(options))
+        
+        if collected_responses:
+            bot_response = " ".join(collected_responses)
+        else:
+            if "No Delta" in data and isinstance(data["No Delta"], list) and data["No Delta"]:
+                bot_response = random.choice(data["No Delta"])
+
+
+    chat_history_db[username].append({"sender": "user", "text": user_message})
+    chat_history_db[username].append({"sender": "bot", "text": bot_response})
+
+
+    return jsonify({"response": bot_response})
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
